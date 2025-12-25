@@ -76,8 +76,10 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) !Metal {
     errdefer queue.release();
 
     // Grab metadata about the device.
+    // On iOS, always use .shared - .managed doesn't exist on iOS.
+    // On macOS, check for unified memory to decide.
     const default_storage_mode: mtl.MTLResourceOptions.StorageMode =
-        if (device.getProperty(bool, "hasUnifiedMemory")) .shared else .managed;
+        if (builtin.os.tag == .ios or device.getProperty(bool, "hasUnifiedMemory")) .shared else .managed;
     const max_texture_size = queryMaxTextureSize(device);
     log.debug(
         "device properties default_storage_mode={} max_texture_size={}",
@@ -123,7 +125,8 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) !Metal {
         },
 
         .ios => {
-            info.view.msgSend(void, objc.sel("addSublayer"), .{layer.layer.value});
+            // Note: selector must include colon for methods with parameters
+            info.view.msgSend(void, objc.sel("addSublayer:"), .{layer.layer.value});
         },
 
         else => @compileError("unsupported target for Metal"),

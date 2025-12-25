@@ -87,6 +87,10 @@ pub fn threadEnter(
     io: *termio.Termio,
     td: *termio.Termio.ThreadData,
 ) !void {
+    if (comptime builtin.os.tag == .ios) {
+        log.info("iOS threadEnter: starting subprocess...", .{});
+    }
+
     // Start our subprocess
     const pty_fds = self.subprocess.start(alloc) catch |err| {
         // If we specifically got this error then we are in the forked
@@ -112,6 +116,12 @@ pub fn threadEnter(
         // as a special case in os/flatpak.zig) since the
         // command is on the host.
         .flatpak => null,
+    } else if (comptime builtin.os.tag == .ios) blk: {
+        // On iOS, no process is spawned. Data will be fed from external sources
+        // (e.g., SSH). We just read/write the PTY with no process watching.
+        log.info("iOS: no process to watch, data fed from external source", .{});
+        log.info("iOS: PTY fds - read={d}, write={d}", .{ pty_fds.read, pty_fds.write });
+        break :blk null;
     } else return error.ProcessNotStarted;
     errdefer if (process) |*p| p.deinit();
 
@@ -135,12 +145,18 @@ pub fn threadEnter(
     errdefer termios_timer.deinit();
 
     // Start our read thread
+    if (comptime builtin.os.tag == .ios) {
+        log.info("iOS: starting read thread with fd={d}", .{pty_fds.read});
+    }
     const read_thread = try std.Thread.spawn(
         .{},
         if (builtin.os.tag == .windows) ReadThread.threadMainWindows else ReadThread.threadMainPosix,
         .{ pty_fds.read, io, pipe[0] },
     );
     read_thread.setName("io-reader") catch {};
+    if (comptime builtin.os.tag == .ios) {
+        log.info("iOS: read thread started successfully", .{});
+    }
 
     // Setup our threadata backend state to be our own
     td.backend = .{ .exec = .{
@@ -1002,6 +1018,18 @@ const Subprocess = struct {
             };
         }
 
+        // On iOS, we cannot spawn processes (sandboxed). The PTY is created
+        // but no command is executed. Data will be fed from external sources
+        // (e.g., SSH connection) by the host application.
+        if (comptime builtin.os.tag == .ios) {
+            log.info("iOS: skipping command spawn, PTY created for external data source", .{});
+            // Don't set self.process - no process is running
+            return .{
+                .read = pty.master,
+                .write = pty.master,
+            };
+        }
+
         // Build our subcommand
         var cmd: Command = .{
             .path = self.args[0],
@@ -1240,6 +1268,10 @@ const Subprocess = struct {
 /// mechanism.
 pub const ReadThread = struct {
     fn threadMainPosix(fd: posix.fd_t, io: *termio.Termio, quit: posix.fd_t) void {
+        if (comptime builtin.os.tag == .ios) {
+            log.info("iOS ReadThread: starting with fd={d}", .{fd});
+        }
+
         // Always close our end of the pipe when we exit.
         defer posix.close(quit);
 
@@ -1250,6 +1282,10 @@ pub const ReadThread = struct {
             internal_os.macos.pthread_setname_np(&"io-reader".*);
         }
 
+        if (comptime builtin.os.tag == .ios) {
+            log.info("iOS ReadThread: thread name set, setting up crash metadata", .{});
+        }
+
         // Setup our crash metadata
         crash.sentry.thread_state = .{
             .type = .io,
@@ -1257,10 +1293,20 @@ pub const ReadThread = struct {
         };
         defer crash.sentry.thread_state = null;
 
+        if (comptime builtin.os.tag == .ios) {
+            log.info("iOS ReadThread: crash metadata set, configuring fd", .{});
+        }
+
         // First thing, we want to set the fd to non-blocking. We do this
         // so that we can try to read from the fd in a tight loop and only
         // check the quit fd occasionally.
+        if (comptime builtin.os.tag == .ios) {
+            log.info("iOS ReadThread: about to call fcntl GETFL", .{});
+        }
         if (posix.fcntl(fd, posix.F.GETFL, 0)) |flags| {
+            if (comptime builtin.os.tag == .ios) {
+                log.info("iOS ReadThread: fcntl GETFL succeeded flags={x}", .{flags});
+            }
             _ = posix.fcntl(
                 fd,
                 posix.F.SETFL,
@@ -1269,9 +1315,16 @@ pub const ReadThread = struct {
                 log.warn("read thread failed to set flags err={}", .{err});
                 log.warn("this isn't a fatal error, but may cause performance issues", .{});
             };
+            if (comptime builtin.os.tag == .ios) {
+                log.info("iOS ReadThread: fcntl SETFL done", .{});
+            }
         } else |err| {
             log.warn("read thread failed to get flags err={}", .{err});
             log.warn("this isn't a fatal error, but may cause performance issues", .{});
+        }
+
+        if (comptime builtin.os.tag == .ios) {
+            log.info("iOS ReadThread: building pollfds array", .{});
         }
 
         // Build up the list of fds we're going to poll. We are looking
@@ -1280,6 +1333,10 @@ pub const ReadThread = struct {
             .{ .fd = fd, .events = posix.POLL.IN, .revents = undefined },
             .{ .fd = quit, .events = posix.POLL.IN, .revents = undefined },
         };
+
+        if (comptime builtin.os.tag == .ios) {
+            log.info("iOS ReadThread: entering main read loop", .{});
+        }
 
         var buf: [1024]u8 = undefined;
         while (true) {

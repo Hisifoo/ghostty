@@ -360,6 +360,16 @@ pub fn reset(self: *Screen) void {
     self.clearSelection();
 }
 
+/// Prepend scrollback from another screen to this one.
+/// This is used for lazy-loading scrollback - prepending older history
+/// that was parsed by a temporary screen.
+///
+/// After this call, `other`'s pages are copied to this screen.
+/// The caller can safely deinit `other` after this call.
+pub fn prependScrollback(self: *Screen, other: *Screen) !void {
+    try self.pages.prependPages(&other.pages);
+}
+
 /// Clone the screen.
 ///
 /// This will copy:

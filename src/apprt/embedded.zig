@@ -1770,10 +1770,68 @@ pub const CAPI = struct {
         surface.preeditCallback(if (len == 0) null else ptr[0..len]);
     }
 
+    /// Write data to the terminal as if it came from the PTY.
+    /// This is the manual API for feeding external data (e.g., SSH) to the
+    /// terminal for rendering. On iOS, this is the primary way to display
+    /// remote terminal output since no local process is spawned.
+    export fn ghostty_surface_write_pty_output(
+        surface: *Surface,
+        ptr: [*]const u8,
+        len: usize,
+    ) void {
+        surface.core_surface.io.processOutput(ptr[0..len]);
+    }
+
+    /// Prepend raw terminal data as scrollback to this terminal.
+    /// This is used for lazy-loading older scrollback history after the
+    /// current screen has been displayed. The data is parsed through a
+    /// temporary terminal and prepended to the beginning of the scrollback.
+    ///
+    /// Returns true on success, false if an error occurred.
+    export fn ghostty_surface_prepend_scrollback(
+        surface: *Surface,
+        ptr: [*]const u8,
+        len: usize,
+    ) bool {
+        // Acquire lock for terminal access
+        surface.core_surface.renderer_state.mutex.lock();
+        defer surface.core_surface.renderer_state.mutex.unlock();
+
+        // Get terminal and allocator
+        const t = surface.core_surface.renderer_state.terminal;
+        const alloc = surface.core_surface.alloc;
+
+        // Parse and prepend the scrollback data
+        t.prependRawScrollback(alloc, ptr[0..len]) catch return false;
+        return true;
+    }
+
+    /// Returns the viewport's row offset from the top of the scrollback buffer.
+    /// Returns 0 when at the very top, increases as user scrolls down.
+    /// This can be used to trigger lazy-loading of additional scrollback
+    /// when the user scrolls near the top (e.g., offset < 100 rows).
+    export fn ghostty_surface_scrollback_offset(surface: *Surface) usize {
+        surface.core_surface.renderer_state.mutex.lock();
+        defer surface.core_surface.renderer_state.mutex.unlock();
+
+        const screen = surface.core_surface.renderer_state.terminal.screens.active;
+        const scrollbar = screen.pages.scrollbar();
+        return scrollbar.offset;
+    }
+
     /// Returns true if the surface currently has mouse capturing
     /// enabled.
     export fn ghostty_surface_mouse_captured(surface: *Surface) bool {
         return surface.core_surface.mouseCaptured();
+    }
+
+    /// Returns true if the terminal is currently on the alternate screen.
+    /// The alternate screen is used by fullscreen apps like vim, less, htop.
+    /// When on the alternate screen, there is no scrollback history.
+    export fn ghostty_surface_is_alternate_screen(surface: *Surface) bool {
+        surface.core_surface.renderer_state.mutex.lock();
+        defer surface.core_surface.renderer_state.mutex.unlock();
+        return surface.core_surface.renderer_state.terminal.screens.active_key == .alternate;
     }
 
     /// Tell the surface that it needs to schedule a render

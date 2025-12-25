@@ -17,6 +17,8 @@ pub const winsize = extern struct {
 
 pub const Pty = switch (builtin.os.tag) {
     .windows => WindowsPty,
+    // iOS doesn't allow PTY allocation (sandbox restriction).
+    // Use NullPty - data is fed directly via ghostty_surface_write_pty_output().
     .ios => NullPty,
     else => PosixPty,
 };
@@ -90,12 +92,13 @@ const PosixPty = struct {
 
     // https://github.com/ziglang/zig/issues/13277
     // Once above is fixed, use `c.TIOCSCTTY`
-    const TIOCSCTTY = if (builtin.os.tag == .macos) 536900705 else c.TIOCSCTTY;
-    const TIOCSWINSZ = if (builtin.os.tag == .macos) 2148037735 else c.TIOCSWINSZ;
-    const TIOCGWINSZ = if (builtin.os.tag == .macos) 1074295912 else c.TIOCGWINSZ;
+    const is_darwin = builtin.os.tag == .macos or builtin.os.tag == .ios;
+    const TIOCSCTTY = if (is_darwin) 536900705 else c.TIOCSCTTY;
+    const TIOCSWINSZ = if (is_darwin) 2148037735 else c.TIOCSWINSZ;
+    const TIOCGWINSZ = if (is_darwin) 1074295912 else c.TIOCGWINSZ;
     extern "c" fn setsid() std.c.pid_t;
     const c = switch (builtin.os.tag) {
-        .macos => @cImport({
+        .macos, .ios => @cImport({
             @cInclude("sys/ioctl.h"); // ioctl and constants
             @cInclude("util.h"); // openpty()
         }),

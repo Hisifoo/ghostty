@@ -7,6 +7,9 @@ const Allocator = std.mem.Allocator;
 const posix = std.posix;
 const homedir = @import("homedir.zig");
 const env_os = @import("env.zig");
+const objc = @import("objc");
+
+const log = std.log.scoped(.xdg);
 
 pub const Options = struct {
     /// Subdirectories to join to the base. This avoids extra allocations
@@ -58,6 +61,14 @@ fn dir(
     opts: Options,
     internal_opts: InternalOptions,
 ) ![]u8 {
+    log.info("dir() called, os.tag={s}", .{@tagName(builtin.os.tag)});
+
+    // iOS uses NSFileManager to get sandbox directories
+    if (builtin.os.tag == .ios) {
+        log.info("Taking iOS path", .{});
+        return try iosDir(alloc, opts.subdir, internal_opts);
+    }
+
     // If we have a cached home dir, use that.
     if (opts.home) |home| {
         return try std.fs.path.join(alloc, &[_][]const u8{
@@ -100,6 +111,45 @@ fn dir(
 
     return error.NoHomeDir;
 }
+
+/// iOS-specific directory resolution using NSHomeDirectory
+fn iosDir(alloc: Allocator, subdir: ?[]const u8, internal_opts: InternalOptions) ![]u8 {
+    log.info("iosDir called for: {s}", .{internal_opts.default_subdir});
+
+    // On iOS, use NSHomeDirectory() which returns the app's sandbox home directory
+    // Then append Library/Caches or Library/Application Support based on type
+
+    // Call NSHomeDirectory() C function - it's in Foundation, returns NSString*
+    const home_ptr = foundation.NSHomeDirectory();
+    if (home_ptr == null) {
+        log.err("NSHomeDirectory returned null", .{});
+        return error.NoHomeDir;
+    }
+
+    // Wrap as objc.Object to call methods
+    const home_str = objc.Object{ .value = @intFromPtr(home_ptr) };
+    const c_str = home_str.getProperty([*:0]const u8, "UTF8String");
+    const home_path = std.mem.sliceTo(c_str, 0);
+    log.info("iOS home path: {s}", .{home_path});
+
+    // Determine subdirectory based on type:
+    // .cache -> Library/Caches
+    // .config/.local/state -> Library/Application Support
+    const lib_subdir = if (std.mem.eql(u8, internal_opts.default_subdir, ".cache"))
+        "Library/Caches"
+    else
+        "Library/Application Support";
+
+    // Build final path
+    if (subdir) |sub| {
+        return try std.fs.path.join(alloc, &[_][]const u8{ home_path, lib_subdir, "ghostty", sub });
+    }
+    return try std.fs.path.join(alloc, &[_][]const u8{ home_path, lib_subdir, "ghostty" });
+}
+
+const foundation = struct {
+    extern "c" fn NSHomeDirectory() ?*anyopaque;
+};
 
 /// Parses the xdg-terminal-exec specification. This expects argv[0] to
 /// be "xdg-terminal-exec".

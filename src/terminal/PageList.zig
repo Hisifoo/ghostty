@@ -2250,6 +2250,80 @@ pub fn scrollClear(self: *PageList) !void {
     for (0..non_empty) |_| _ = try self.grow();
 }
 
+/// Prepend all pages from another PageList to the beginning of this one.
+/// This is used for lazy-loading scrollback - prepending older history
+/// to the front of the scrollback buffer.
+///
+/// This properly copies the page data into self's memory pool, so other
+/// can be safely deinited after this call.
+/// The caller is responsible for ensuring `other` has compatible column width.
+pub fn prependPages(self: *PageList, other: *PageList) !void {
+    defer self.assertIntegrity();
+
+    // Nothing to do if other is empty
+    if (other.pages.first == null) return;
+
+    // Build a list of cloned pages in reverse order (we'll prepend them)
+    // We need to clone because other's pages live in other's pool, which
+    // will be freed when other is deinited.
+    var cloned_pages: List = .{};
+    var cloned_rows: usize = 0;
+
+    // Iterate through other's pages and clone each one
+    var other_node = other.pages.first;
+    while (other_node) |node| : (other_node = node.next) {
+        // Create a new page in self's pool with same capacity
+        const new_node = try createPageExt(
+            &self.pool,
+            node.data.capacity,
+            &self.page_serial,
+            &self.page_size,
+        );
+
+        // Clone the page data
+        new_node.data.size.rows = node.data.size.rows;
+        new_node.data.size.cols = node.data.size.cols;
+        try new_node.data.cloneFrom(
+            &node.data,
+            0,
+            node.data.size.rows,
+        );
+        new_node.data.dirty = node.data.dirty;
+
+        // Add to our cloned list
+        cloned_pages.append(new_node);
+        cloned_rows += node.data.size.rows;
+    }
+
+    // Now prepend the cloned pages to self
+    if (cloned_pages.first) |cloned_first| {
+        if (self.pages.first) |self_first| {
+            // Connect cloned list's last to self's first
+            const cloned_last = cloned_pages.last.?;
+            cloned_last.next = self_first;
+            self_first.prev = cloned_last;
+
+            // Update self's first to be cloned's first
+            self.pages.first = cloned_first;
+        } else {
+            // self was empty, just use cloned pages
+            self.pages.first = cloned_first;
+            self.pages.last = cloned_pages.last;
+        }
+    }
+
+    // Update row count
+    self.total_rows += cloned_rows;
+
+    // Update viewport offset if we have a pinned viewport
+    // Since we prepended rows, the offset from top increases
+    if (self.viewport == .pin) {
+        if (self.viewport_pin_row_offset) |*offset| {
+            offset.* += cloned_rows;
+        }
+    }
+}
+
 /// This represents the state necessary to render a scrollbar for this
 /// PageList. It has the total size, the offset, and the size of the viewport.
 pub const Scrollbar = struct {
@@ -10840,4 +10914,89 @@ test "PageList resize reflow grapheme map capacity exceeded" {
 
     // Verify the resize succeeded
     try testing.expectEqual(@as(usize, 2), s.cols);
+}
+
+test "PageList prependPages basic" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    // Create main list with 24 rows
+    var main = try init(alloc, 80, 24, null);
+    defer main.deinit();
+
+    // Create other list with 24 rows
+    var other = try init(alloc, 80, 24, null);
+    defer other.deinit();
+
+    const main_initial_rows = main.total_rows;
+    const other_initial_rows = other.total_rows;
+
+    // Prepend other to main (now copies, doesn't transfer)
+    try main.prependPages(&other);
+
+    // Main should now have rows from both lists
+    try testing.expectEqual(main_initial_rows + other_initial_rows, main.total_rows);
+
+    // Other is unchanged (we copy, not transfer)
+    try testing.expectEqual(other_initial_rows, other.total_rows);
+    try testing.expect(other.pages.first != null);
+}
+
+test "PageList prependPages empty other" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    // Create main list with 24 rows
+    var main = try init(alloc, 80, 24, null);
+    defer main.deinit();
+
+    // Create and immediately clear other list
+    var other = try init(alloc, 80, 24, null);
+    other.pages.first = null;
+    other.pages.last = null;
+    other.total_rows = 0;
+    other.page_size = 0;
+    defer other.deinit();
+
+    const main_initial_rows = main.total_rows;
+
+    // Prepending empty list should have no effect
+    try main.prependPages(&other);
+
+    try testing.expectEqual(main_initial_rows, main.total_rows);
+}
+
+test "PageList prependPages with pinned viewport" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    // Create main list with 24 rows
+    var main = try init(alloc, 80, 24, null);
+    defer main.deinit();
+
+    // Pin the viewport to the first page (simulating user scrolled up)
+    if (main.pages.first) |first_page| {
+        main.viewport_pin.* = .{
+            .node = first_page,
+            .y = 12, // Middle of first page
+        };
+        main.viewport = .pin;
+        main.viewport_pin_row_offset = 12;
+    }
+
+    // Create other list to prepend
+    var other = try init(alloc, 80, 24, null);
+    defer other.deinit();
+
+    const main_initial_rows = main.total_rows;
+    const other_rows = other.total_rows;
+
+    // Prepend other to main - this should handle the pinned viewport
+    try main.prependPages(&other);
+
+    // Main should now have rows from both lists
+    try testing.expectEqual(main_initial_rows + other_rows, main.total_rows);
+
+    // Integrity should be valid (this will crash if prepend broke something)
+    main.assertIntegrity();
 }

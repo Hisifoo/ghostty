@@ -269,6 +269,37 @@ pub fn vtHandler(self: *Terminal) ReadonlyHandler {
     return .init(self);
 }
 
+/// Prepend raw terminal data as scrollback to this terminal.
+///
+/// This parses the raw data through a temporary terminal and prepends
+/// the resulting pages to the beginning of this terminal's scrollback.
+/// This is useful for lazy-loading older scrollback history after the
+/// current screen has been displayed.
+///
+/// The data should be raw VT100/ANSI escape sequences as would be
+/// received from a PTY.
+pub fn prependRawScrollback(self: *Terminal, alloc: Allocator, data: []const u8) !void {
+    // Always prepend to the primary screen - the alternate screen has no scrollback.
+    // If we're on the alternate screen and try to prepend there, it will crash.
+    const primary = self.screens.get(.primary).?;
+
+    // Create a temporary terminal with the same dimensions
+    var temp_term = try Terminal.init(alloc, .{
+        .cols = self.cols,
+        .rows = self.rows,
+        .max_scrollback = 0, // No limit - we'll transfer all pages
+    });
+    defer temp_term.deinit(alloc);
+
+    // Parse the raw data through the temporary terminal
+    var stream = temp_term.vtStream();
+    defer stream.deinit();
+    try stream.nextSlice(data);
+
+    // Prepend the temporary terminal's pages to the primary screen's scrollback
+    try primary.prependScrollback(temp_term.screens.active);
+}
+
 /// The general allocator we should use for this terminal.
 fn gpa(self: *Terminal) Allocator {
     return self.screens.active.alloc;
@@ -11674,4 +11705,53 @@ test "Terminal: mode 1049 alt screen plain" {
         defer testing.allocator.free(str);
         try testing.expectEqualStrings("", str);
     }
+}
+
+test "Terminal: prependRawScrollback basic" {
+    const alloc = testing.allocator;
+
+    // Create a terminal
+    var t = try init(alloc, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(alloc);
+
+    // Get initial row count
+    const initial_rows = t.screens.active.pages.total_rows;
+
+    // Write some content to current terminal
+    try t.printString("Current screen content");
+
+    // Prepend raw scrollback data (simple text that ends with newlines)
+    const scrollback = "Line 1\nLine 2\nLine 3\n";
+    try t.prependRawScrollback(alloc, scrollback);
+
+    // Verify rows increased
+    try testing.expect(t.screens.active.pages.total_rows >= initial_rows);
+}
+
+test "Terminal: prependRawScrollback on alternate screen" {
+    const alloc = testing.allocator;
+
+    // Create a terminal
+    var t = try init(alloc, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(alloc);
+
+    // Get initial row count on primary screen
+    const primary_initial_rows = t.screens.get(.primary).?.pages.total_rows;
+
+    // Switch to alternate screen (like vim, less, Claude Code would do)
+    try t.switchScreenMode(.@"1049", true);
+    try testing.expectEqual(.alternate, t.screens.active_key);
+
+    // Prepend scrollback while on alternate screen
+    // This should go to PRIMARY screen, not alternate (alternate has no scrollback)
+    const scrollback = "Line 1\nLine 2\nLine 3\n";
+    try t.prependRawScrollback(alloc, scrollback);
+
+    // Verify primary screen got the scrollback (rows increased)
+    const primary = t.screens.get(.primary).?;
+    try testing.expect(primary.pages.total_rows >= primary_initial_rows);
+
+    // Alternate screen should be unchanged (still just 24 rows for viewport)
+    const alternate = t.screens.get(.alternate).?;
+    try testing.expectEqual(@as(usize, 24), alternate.pages.total_rows);
 }

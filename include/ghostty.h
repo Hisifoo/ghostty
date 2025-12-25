@@ -1049,7 +1049,11 @@ bool ghostty_surface_key(ghostty_surface_t, ghostty_input_key_s);
 bool ghostty_surface_key_is_binding(ghostty_surface_t, ghostty_input_key_s);
 void ghostty_surface_text(ghostty_surface_t, const char*, uintptr_t);
 void ghostty_surface_preedit(ghostty_surface_t, const char*, uintptr_t);
+void ghostty_surface_write_pty_output(ghostty_surface_t, const char*, uintptr_t);
+bool ghostty_surface_prepend_scrollback(ghostty_surface_t, const char*, uintptr_t);
+uintptr_t ghostty_surface_scrollback_offset(ghostty_surface_t);
 bool ghostty_surface_mouse_captured(ghostty_surface_t);
+bool ghostty_surface_is_alternate_screen(ghostty_surface_t);
 bool ghostty_surface_mouse_button(ghostty_surface_t,
                                   ghostty_input_mouse_state_e,
                                   ghostty_input_mouse_button_e,
