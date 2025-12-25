@@ -520,25 +520,24 @@ fn wakeupCallback(
     t.drainMailbox() catch |err|
         log.err("error draining mailbox err={}", .{err});
 
-    // Render immediately
-    _ = renderCallback(t, undefined, undefined, {});
+    // Coalesce renders by using a short timer delay. This batches multiple
+    // rapid wakeups (e.g., from SSH chunks) into a single render call,
+    // significantly reducing CPU usage on iOS where updateFrame/rebuildCells
+    // is expensive. The 10ms delay is imperceptible (human reaction time is
+    // ~150-250ms) but allows multiple wakeups to coalesce.
 
-    // The below is not used anymore but if we ever want to introduce
-    // a configuration to introduce a delay to coalesce renders, we can
-    // use this.
-    //
-    // // If the timer is already active then we don't have to do anything.
-    // if (t.render_c.state() == .active) return .rearm;
-    //
-    // // Timer is not active, let's start it
-    // t.render_h.run(
-    //     &t.loop,
-    //     &t.render_c,
-    //     10,
-    //     Thread,
-    //     t,
-    //     renderCallback,
-    // );
+    // If the timer is already active then we don't have to do anything.
+    if (t.render_c.state() == .active) return .rearm;
+
+    // Timer is not active, let's start it
+    t.render_h.run(
+        &t.loop,
+        &t.render_c,
+        10,
+        Thread,
+        t,
+        renderCallback,
+    );
 
     return .rearm;
 }
