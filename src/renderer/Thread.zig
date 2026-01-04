@@ -91,6 +91,12 @@ app_mailbox: App.Mailbox,
 /// Configuration we need derived from the main config.
 config: DerivedConfig,
 
+/// Current power mode for battery optimization (iOS).
+power_mode: rendererpkg.Message.PowerMode = .normal,
+
+/// Diagnostics for frame rate monitoring
+diag: Diagnostics = .{},
+
 flags: packed struct {
     /// This is true when a blinking cursor should be visible and false
     /// when it should not be visible. This is toggled on a timer by the
@@ -116,6 +122,37 @@ pub const DerivedConfig = struct {
         return .{
             .custom_shader_animation = config.@"custom-shader-animation",
         };
+    }
+};
+
+pub const Diagnostics = struct {
+    /// Number of frames rendered since last reset
+    frame_count: u64 = 0,
+    /// Timestamp of last FPS log (nanoseconds)
+    last_fps_log: i128 = 0,
+    /// Frames since last FPS log
+    frames_since_log: u32 = 0,
+    /// Interval for FPS logging (5 seconds in nanoseconds)
+    const LOG_INTERVAL_NS: i128 = 5_000_000_000;
+
+    pub fn recordFrame(self: *Diagnostics) void {
+        self.frame_count += 1;
+        self.frames_since_log += 1;
+
+        const now = std.time.nanoTimestamp();
+        const elapsed = now - self.last_fps_log;
+
+        if (elapsed >= LOG_INTERVAL_NS) {
+            const elapsed_secs: f64 = @as(f64, @floatFromInt(elapsed)) / 1_000_000_000.0;
+            const fps: f64 = @as(f64, @floatFromInt(self.frames_since_log)) / elapsed_secs;
+            log.info("RENDER DIAG: fps={d:.1} frames={} total={}", .{
+                fps,
+                self.frames_since_log,
+                self.frame_count,
+            });
+            self.frames_since_log = 0;
+            self.last_fps_log = now;
+        }
     }
 };
 
@@ -263,7 +300,7 @@ fn threadMain_(self: *Thread) !void {
 }
 
 fn setQosClass(self: *const Thread) void {
-    // Thread QoS classes are only relevant on macOS.
+    // Thread QoS classes are only relevant on macOS/iOS.
     if (comptime !builtin.target.os.tag.isDarwin()) return;
 
     const class: internal_os.macos.QosClass = class: {
@@ -275,6 +312,9 @@ fn setQosClass(self: *const Thread) void {
         // Metal will stop our DisplayLink) but this also helps with
         // general forced updates and CPU usage i.e. a rebuild cells call.
         if (!self.flags.visible) break :class .utility;
+
+        // In low power mode, use lower QoS to save battery.
+        if (self.power_mode == .low_power) break :class .utility;
 
         // If we're not focused, but we're visible, then we set a higher
         // than default priority because framerates still matter but it isn't
@@ -473,6 +513,13 @@ fn drainMailbox(self: *Thread) !void {
                     try self.renderer.setMacOSDisplayID(v);
                 }
             },
+
+            .power_mode => |mode| {
+                self.power_mode = mode;
+                // Power mode affects QoS class
+                self.setQosClass();
+                log.info("POWER MODE: {} (coalesce={}ms)", .{ mode, mode.coalesceDelay() });
+            },
         }
     }
 }
@@ -529,11 +576,12 @@ fn wakeupCallback(
     // If the timer is already active then we don't have to do anything.
     if (t.render_c.state() == .active) return .rearm;
 
-    // Timer is not active, let's start it
+    // Timer is not active, let's start it.
+    // Use dynamic coalescing delay based on power mode.
     t.render_h.run(
         &t.loop,
         &t.render_c,
-        10,
+        t.power_mode.coalesceDelay(),
         Thread,
         t,
         renderCallback,
@@ -602,15 +650,19 @@ fn renderCallback(
         _ = t.app_mailbox.push(.{ .redraw_inspector = t.surface }, .{ .instant = {} });
     }
 
-    // Update our frame data
+    // Update our frame data (always, to keep terminal state current)
     t.renderer.updateFrame(
         t.state,
         t.flags.cursor_blink_visible,
     ) catch |err|
         log.warn("error rendering err={}", .{err});
 
-    // Draw
-    t.drawFrame(false);
+    // Skip GPU draw for unfocused surfaces (battery optimization)
+    // Terminal state is updated above, but no Metal rendering until visible
+    if (t.flags.focused) {
+        t.drawFrame(false);
+        t.diag.recordFrame();
+    }
 
     return .disarm;
 }

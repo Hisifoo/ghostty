@@ -3,6 +3,7 @@ const inputpkg = @import("../input.zig");
 const state = &@import("../global.zig").state;
 const c = @import("../main_c.zig");
 
+const cli = @import("../cli.zig");
 const Config = @import("Config.zig");
 const c_get = @import("c_get.zig");
 const edit = @import("edit.zig");
@@ -71,6 +72,16 @@ export fn ghostty_config_load_default_files(self: *Config) void {
 export fn ghostty_config_load_recursive_files(self: *Config) void {
     self.loadRecursiveFiles(state.alloc) catch |err| {
         log.err("error loading config err={}", .{err});
+    };
+}
+
+/// Load configuration from a string buffer. This is useful for iOS
+/// where themes are bundled in the app and loaded from memory.
+export fn ghostty_config_load_string(self: *Config, ptr: [*]const u8, len: usize) void {
+    var reader: std.Io.Reader = .fixed(ptr[0..len]);
+    var iter: cli.args.LineIterator = .{ .r = &reader };
+    self.loadIter(state.alloc, &iter) catch |err| {
+        log.err("error loading config from string err={}", .{err});
     };
 }
 

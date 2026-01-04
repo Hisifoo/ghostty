@@ -1914,6 +1914,11 @@ fn trimTrailingBlankRows(
         // If the row has any text then we're done.
         if (pagepkg.Cell.hasTextAny(cells)) return trimmed;
 
+        // If the row has a semantic prompt marker (OSC 133), it's meaningful
+        // even if blank. This preserves prompt lines during resize operations.
+        const row = row_pin.rowAndCell().row;
+        if (row.semantic_prompt != .unknown) return trimmed;
+
         // If our tracked pins are in this row then we cannot trim it
         // because it implies some sort of importance. If we trimmed this
         // we'd invalidate this pin, as well.
@@ -10999,4 +11004,231 @@ test "PageList prependPages with pinned viewport" {
 
     // Integrity should be valid (this will crash if prepend broke something)
     main.assertIntegrity();
+}
+
+test "PageList resize reflow cols grow rows shrink preserves bottom content" {
+    // This test reproduces a bug found in Clauntty when rotating from portrait
+    // to landscape. When cols grow AND rows shrink simultaneously, content at
+    // the bottom of the terminal can be lost.
+    //
+    // Scenario: 54x44 (portrait) -> 101x19 (landscape)
+    // Content: 7 lines at bottom (info lines + 2 prompts), cursor on last line
+    // Bug: Second prompt line disappears after resize
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    // Use EXACT values from the bug report
+    // Portrait: 54 cols x 44 rows
+    // Landscape: 101 cols x 19 rows
+    var s = try init(alloc, 54, 44, 0);
+    defer s.deinit();
+
+    const page = &s.pages.first.?.data;
+
+    // Fill the last 7 rows with content matching real terminal output
+    // These are real lines from the Clauntty SSH session
+    const lines = [_][]const u8{
+        "info(client): connected to /home/ubuntu/.clauntty",
+        "info(shell_integration): deployed shell integ",
+        "info(master): detected shell type: bash",
+        "info(master): executing shell: /bin/bash",
+        "info(master):   arg1: --rcfile",
+        "ubuntu@ip-10-0-1-108:~$ ",
+        "ubuntu@ip-10-0-1-108:~$ ",
+    };
+
+    const start_row = 44 - lines.len; // Start at row 37
+    for (lines, 0..) |line, row_offset| {
+        const row = start_row + row_offset;
+        for (line, 0..) |char, x| {
+            if (x >= 54) break; // Don't overflow columns
+            const rac = page.getRowAndCell(x, row);
+            rac.cell.* = .{
+                .content_tag = .codepoint,
+                .content = .{ .codepoint = char },
+            };
+        }
+    }
+
+    // Resize: 54x44 -> 101x19 (portrait to landscape)
+    try s.resize(.{
+        .cols = 101,
+        .rows = 19,
+        .reflow = true,
+        .cursor = .{ .x = 24, .y = 43 }, // cursor at end of second prompt
+    });
+
+    try testing.expectEqual(@as(usize, 101), s.cols);
+    try testing.expectEqual(@as(usize, 19), s.rows);
+
+    // Both prompt lines should be accessible - either in active area or scrollback
+    var found_prompt1 = false;
+    var found_prompt2 = false;
+    const prompt = "ubuntu@ip-10-0-1-108:~$ ";
+
+    var prompt_count: usize = 0;
+    var it = s.rowIterator(.right_down, .{ .screen = .{} }, null);
+    while (it.next()) |row_pin| {
+        const cells = row_pin.cells(.all);
+
+        // Check if this row contains the prompt
+        if (cells.len >= prompt.len) {
+            var matches = true;
+            for (prompt, 0..) |char, i| {
+                if (cells[i].content_tag != .codepoint or
+                    cells[i].content.codepoint != char)
+                {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches) {
+                prompt_count += 1;
+                if (prompt_count == 1) found_prompt1 = true;
+                if (prompt_count == 2) found_prompt2 = true;
+            }
+        }
+    }
+
+    // BOTH prompt lines should be found somewhere in the buffer
+    // This is the key assertion - if this fails, content was lost
+    try testing.expectEqual(@as(usize, 2), prompt_count);
+    try testing.expect(found_prompt1);
+    try testing.expect(found_prompt2);
+}
+
+test "PageList resize reflow forceRedraw simulation" {
+    // This test simulates what Clauntty's forceRedraw() does:
+    // After normal resize, it does (w-1, h) then (w, h) to force re-render.
+    // This tests if that sequence causes content loss.
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    // Portrait: 54 cols x 44 rows
+    var s = try init(alloc, 54, 44, 0);
+    defer s.deinit();
+
+    const page = &s.pages.first.?.data;
+
+    // Write two prompts at the bottom
+    const prompt = "ubuntu@ip-10-0-1-108:~$ ";
+    for ([_]usize{ 42, 43 }) |row| {
+        for (prompt, 0..) |char, x| {
+            const rac = page.getRowAndCell(x, row);
+            rac.cell.* = .{
+                .content_tag = .codepoint,
+                .content = .{ .codepoint = char },
+            };
+        }
+    }
+
+    // First resize: portrait to landscape (54x44 -> 101x19)
+    try s.resize(.{
+        .cols = 101,
+        .rows = 19,
+        .reflow = true,
+        .cursor = .{ .x = 24, .y = 43 },
+    });
+
+    // Simulate forceRedraw: resize to (cols-1, rows) then back
+    // This is what Clauntty does to force Ghostty to re-render
+    try s.resize(.{
+        .cols = 100, // cols - 1
+        .rows = 19,
+        .reflow = true,
+        .cursor = .{ .x = 24, .y = 18 }, // cursor at bottom of new size
+    });
+
+    try s.resize(.{
+        .cols = 101, // back to original
+        .rows = 19,
+        .reflow = true,
+        .cursor = .{ .x = 24, .y = 18 },
+    });
+
+    // Count prompts after all the resizing
+    var prompt_count: usize = 0;
+    var it = s.rowIterator(.right_down, .{ .screen = .{} }, null);
+    while (it.next()) |row_pin| {
+        const cells = row_pin.cells(.all);
+        if (cells.len >= prompt.len) {
+            var matches = true;
+            for (prompt, 0..) |char, i| {
+                if (cells[i].content_tag != .codepoint or
+                    cells[i].content.codepoint != char)
+                {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches) prompt_count += 1;
+        }
+    }
+
+    // Both prompts should still exist after triple resize
+    try testing.expectEqual(@as(usize, 2), prompt_count);
+}
+
+test "PageList trimTrailingBlankRows preserves semantic_prompt rows" {
+    // This test reproduces the rotation bug: an empty row with semantic_prompt
+    // is incorrectly trimmed during row shrinking.
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    // Start with a small terminal
+    var s = try init(alloc, 80, 10, 0);
+    defer s.deinit();
+
+    try testing.expect(s.pages.first == s.pages.last);
+    const page = &s.pages.first.?.data;
+
+    // Write content to row 7 (leaving rows 8 and 9 empty)
+    {
+        const rac = page.getRowAndCell(0, 7);
+        rac.cell.* = .{
+            .content_tag = .codepoint,
+            .content = .{ .codepoint = 'X' },
+        };
+    }
+
+    // Mark row 8 (empty) as a semantic prompt - this simulates an OSC 133;A
+    // on a blank line (like when the shell just printed a newline before the prompt)
+    {
+        const rac = page.getRowAndCell(0, 8);
+        rac.row.semantic_prompt = .prompt;
+    }
+
+    // Verify row 8 is marked as prompt
+    {
+        const rac = page.getRowAndCell(0, 8);
+        try testing.expect(rac.row.semantic_prompt == .prompt);
+    }
+
+    // Now shrink from 10 rows to 8 rows
+    // The bug: trimTrailingBlankRows will trim rows 8 and 9 because they're "blank",
+    // but row 8 has semantic_prompt = .prompt which should protect it!
+    try s.resize(.{
+        .rows = 8,
+        .reflow = false,
+    });
+
+    // After shrink, row 7 should now be the last row in active area.
+    // The semantic prompt row SHOULD be pushed to scrollback, not deleted.
+
+    // Check total rows - should be at least 9 (8 active + at least 1 in scrollback
+    // for the semantic prompt row)
+    // But if the bug exists, total_rows might be exactly 8 (semantic prompt row was trimmed)
+    try testing.expect(s.totalRows() >= 9);
+
+    // Verify the semantic prompt row is still accessible in scrollback
+    var found_prompt = false;
+    var it = s.rowIterator(.right_down, .{ .screen = .{} }, null);
+    while (it.next()) |row_pin| {
+        const row = row_pin.rowAndCell().row;
+        if (row.semantic_prompt == .prompt) {
+            found_prompt = true;
+            break;
+        }
+    }
+    try testing.expect(found_prompt);
 }

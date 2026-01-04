@@ -83,6 +83,11 @@ typedef enum {
   GHOSTTY_COLOR_SCHEME_DARK = 1,
 } ghostty_color_scheme_e;
 
+typedef enum {
+  GHOSTTY_POWER_MODE_NORMAL = 0,
+  GHOSTTY_POWER_MODE_LOW_POWER = 1,
+} ghostty_power_mode_e;
+
 // This is a packed struct (see src/input/mouse.zig) but the C standard
 // afaik doesn't let us reliably define packed structs so we build it up
 // from scratch.
@@ -366,6 +371,8 @@ typedef struct {
 typedef struct {
   double tl_px_x;
   double tl_px_y;
+  double br_px_x;
+  double br_px_y;
   uint32_t offset_start;
   uint32_t offset_len;
   const char* text;
@@ -998,6 +1005,7 @@ ghostty_config_t ghostty_config_clone(ghostty_config_t);
 void ghostty_config_load_cli_args(ghostty_config_t);
 void ghostty_config_load_default_files(ghostty_config_t);
 void ghostty_config_load_recursive_files(ghostty_config_t);
+void ghostty_config_load_string(ghostty_config_t, const char*, uintptr_t);
 void ghostty_config_finalize(ghostty_config_t);
 bool ghostty_config_get(ghostty_config_t, void*, const char*, uintptr_t);
 ghostty_input_trigger_s ghostty_config_trigger(ghostty_config_t,
@@ -1038,6 +1046,7 @@ void ghostty_surface_draw(ghostty_surface_t);
 void ghostty_surface_set_content_scale(ghostty_surface_t, double, double);
 void ghostty_surface_set_focus(ghostty_surface_t, bool);
 void ghostty_surface_set_occlusion(ghostty_surface_t, bool);
+void ghostty_surface_set_power_mode(ghostty_surface_t, ghostty_power_mode_e);
 void ghostty_surface_set_size(ghostty_surface_t, uint32_t, uint32_t);
 ghostty_surface_size_s ghostty_surface_size(ghostty_surface_t);
 void ghostty_surface_set_color_scheme(ghostty_surface_t,
@@ -1047,9 +1056,12 @@ ghostty_input_mods_e ghostty_surface_key_translation_mods(ghostty_surface_t,
 void ghostty_surface_commands(ghostty_surface_t, ghostty_command_s**, size_t*);
 bool ghostty_surface_key(ghostty_surface_t, ghostty_input_key_s);
 bool ghostty_surface_key_is_binding(ghostty_surface_t, ghostty_input_key_s);
+bool ghostty_surface_bracketed_paste_enabled(ghostty_surface_t);
 void ghostty_surface_text(ghostty_surface_t, const char*, uintptr_t);
 void ghostty_surface_preedit(ghostty_surface_t, const char*, uintptr_t);
 void ghostty_surface_write_pty_output(ghostty_surface_t, const char*, uintptr_t);
+void ghostty_surface_set_pty_input_callback(ghostty_surface_t,
+                                            void (*callback)(void*, const char*, uintptr_t));
 bool ghostty_surface_prepend_scrollback(ghostty_surface_t, const char*, uintptr_t);
 uintptr_t ghostty_surface_scrollback_offset(ghostty_surface_t);
 bool ghostty_surface_mouse_captured(ghostty_surface_t);

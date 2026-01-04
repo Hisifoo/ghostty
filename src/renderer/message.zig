@@ -67,6 +67,23 @@ pub const Message = union(enum) {
     /// The macOS display ID has changed for the window.
     macos_display_id: u32,
 
+    /// Power mode for battery optimization (iOS).
+    /// Affects render coalescing delay and QoS class.
+    power_mode: PowerMode,
+
+    pub const PowerMode = enum(c_int) {
+        normal = 0,
+        low_power = 1,
+
+        /// Get render coalescing delay in milliseconds.
+        pub fn coalesceDelay(self: PowerMode) u64 {
+            return switch (self) {
+                .normal => 10,
+                .low_power => 30,
+            };
+        }
+    };
+
     pub const SearchMatches = struct {
         arena: ArenaAllocator,
         matches: []const terminal.highlight.Flattened,

@@ -418,6 +418,11 @@ pub const Surface = struct {
     /// that getTitle works without the implementer needing to save it.
     title: ?[:0]const u8 = null,
 
+    /// Callback for PTY input on iOS. When set, data that would normally be
+    /// written to the PTY (mouse events, etc.) is sent to this callback instead.
+    /// This is used on iOS where there's no real PTY - data should go to SSH.
+    pty_input_callback: ?*const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void = null,
+
     /// Surface initialization options.
     pub const Options = extern struct {
         /// The platform that this surface is being initialized for and
@@ -879,6 +884,20 @@ pub const Surface = struct {
         };
     }
 
+    pub fn powerModeCallback(self: *Surface, mode_raw: c_int) void {
+        const mode = std.meta.intToEnum(renderer.Message.PowerMode, mode_raw) catch {
+            log.warn("invalid power mode value={}", .{mode_raw});
+            return;
+        };
+
+        // Send power mode to renderer thread
+        _ = self.core_surface.renderer_thread.mailbox.push(
+            .{ .power_mode = mode },
+            .{ .instant = {} },
+        );
+        self.core_surface.renderer_thread.wakeup.notify() catch {};
+    }
+
     fn queueInspectorRender(self: *Surface) void {
         _ = self.app.performAction(
             .{ .surface = &self.core_surface },
@@ -1238,6 +1257,8 @@ pub const CAPI = struct {
     const Text = extern struct {
         tl_px_x: f64,
         tl_px_y: f64,
+        br_px_x: f64,
+        br_px_y: f64,
         offset_start: u32,
         offset_len: u32,
         text: ?[*:0]const u8,
@@ -1603,6 +1624,8 @@ pub const CAPI = struct {
         const vp: CoreSurface.Text.Viewport = text.viewport orelse .{
             .tl_px_x = -1,
             .tl_px_y = -1,
+            .br_px_x = -1,
+            .br_px_y = -1,
             .offset_start = 0,
             .offset_len = 0,
         };
@@ -1610,6 +1633,8 @@ pub const CAPI = struct {
         result.* = .{
             .tl_px_x = vp.tl_px_x,
             .tl_px_y = vp.tl_px_y,
+            .br_px_x = vp.br_px_x,
+            .br_px_y = vp.br_px_y,
             .offset_start = vp.offset_start,
             .offset_len = vp.offset_len,
             .text = text.text.ptr,
@@ -1619,7 +1644,7 @@ pub const CAPI = struct {
         return true;
     }
 
-    export fn ghostty_surface_free_text(ptr: *Text) void {
+    export fn ghostty_surface_free_text(_: *Surface, ptr: *Text) void {
         ptr.deinit();
     }
 
@@ -1679,6 +1704,11 @@ pub const CAPI = struct {
     /// Update the occlusion state of a surface.
     export fn ghostty_surface_set_occlusion(surface: *Surface, visible: bool) void {
         surface.occlusionCallback(visible);
+    }
+
+    /// Set the power mode for battery optimization (iOS).
+    export fn ghostty_surface_set_power_mode(surface: *Surface, mode: c_int) void {
+        surface.powerModeCallback(mode);
     }
 
     /// Filter the mods if necessary. This handles settings such as
@@ -1749,6 +1779,15 @@ pub const CAPI = struct {
         return surface.core_surface.keyEventIsBinding(core_event);
     }
 
+    /// Check if bracketed paste mode is enabled for this surface.
+    /// When enabled, paste data should be wrapped with ESC[200~ / ESC[201~.
+    /// Returns true if the remote application has enabled bracketed paste mode.
+    export fn ghostty_surface_bracketed_paste_enabled(surface: *Surface) bool {
+        surface.core_surface.renderer_state.mutex.lock();
+        defer surface.core_surface.renderer_state.mutex.unlock();
+        return surface.core_surface.io.terminal.modes.get(.bracketed_paste);
+    }
+
     /// Send raw text to the terminal. This is treated like a paste
     /// so this isn't useful for sending escape sequences. For that,
     /// individual key input should be used.
@@ -1780,6 +1819,20 @@ pub const CAPI = struct {
         len: usize,
     ) void {
         surface.core_surface.io.processOutput(ptr[0..len]);
+    }
+
+    /// Set the callback for PTY input on iOS.
+    /// When set, data that would normally be written to the PTY (keyboard input,
+    /// mouse events, etc.) is sent to this callback instead. This is used on iOS
+    /// where there's no real PTY - data should be forwarded to SSH.
+    ///
+    /// The callback receives: userdata, data pointer, data length.
+    /// The userdata is the surface's userdata pointer.
+    export fn ghostty_surface_set_pty_input_callback(
+        surface: *Surface,
+        callback: ?*const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void,
+    ) void {
+        surface.pty_input_callback = callback;
     }
 
     /// Prepend raw terminal data as scrollback to this terminal.
