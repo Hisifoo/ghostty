@@ -958,7 +958,7 @@ pub const Surface = struct {
 
     /// Write PTY output data to the terminal.
     pub fn writePtyOutput(self: *Surface, data: []const u8) void {
-        self.core_surface.io.processOutput(data);
+        self.core_surface.io.terminal.printString(data) catch {};
     }
 
     /// Set the PTY input callback. This is called when data is written to the PTY.
@@ -2294,3 +2294,4 @@ pub const CAPI = struct {
         }
     };
 };
+
