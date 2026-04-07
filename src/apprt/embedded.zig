@@ -1735,6 +1735,7 @@ pub const CAPI = struct {
     ) bool {
         // This is complex - create a new page, insert at scrollback head.
         // For now, return false (not implemented).
+        _ = surface;
         _ = ptr;
         _ = len;
         return false;
