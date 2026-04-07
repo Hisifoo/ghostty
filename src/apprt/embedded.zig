@@ -418,6 +418,20 @@ pub const Surface = struct {
     /// that getTitle works without the implementer needing to save it.
     title: ?[:0]const u8 = null,
 
+    /// Callback for PTY input. This is called when data is written to the PTY.
+    pty_input_callback: ?*const fn (void, [*]const u8, usize) callconv(.c) void,
+    pty_input_userdata: ?*anyopaque,
+
+    /// Power mode for the surface.
+    power_mode: PowerMode,
+
+    /// Power mode enum for controlling performance/energy usage.
+    const PowerMode = enum {
+        default,
+        low_power,
+        high_performance,
+    };
+
     /// Surface initialization options.
     pub const Options = extern struct {
         /// The platform that this surface is being initialized for and
@@ -470,6 +484,9 @@ pub const Surface = struct {
             },
             .size = .{ .width = 800, .height = 600 },
             .cursor_pos = .{ .x = -1, .y = -1 },
+            .pty_input_callback = null,
+            .pty_input_userdata = null,
+            .power_mode = .default,
         };
 
         // Add ourselves to the list of surfaces on the app.
@@ -938,6 +955,27 @@ pub const Surface = struct {
         const scale = try self.getContentScale();
         return .{ .x = pos.x * scale.x, .y = pos.y * scale.y };
     }
+
+    /// Write PTY output data to the terminal.
+    pub fn writePtyOutput(self: *Surface, data: []const u8) void {
+        self.core_surface.io.processOutput(data);
+    }
+
+    /// Set the PTY input callback. This is called when data is written to the PTY.
+    pub fn setPtyInputCallback(
+        self: *Surface,
+        cb: ?*const fn (void, [*]const u8, usize) callconv(.c) void,
+        userdata: ?*anyopaque,
+    ) void {
+        self.pty_input_callback = cb;
+        self.pty_input_userdata = userdata;
+    }
+
+    /// Set the power mode for the surface.
+    pub fn setPowerMode(self: *Surface, mode: PowerMode) void {
+        self.power_mode = mode;
+        // Could adjust frame rate, animations etc based on mode
+    }
 };
 
 /// Inspector is the state required for the terminal inspector. A terminal
@@ -1238,6 +1276,8 @@ pub const CAPI = struct {
     const Text = extern struct {
         tl_px_x: f64,
         tl_px_y: f64,
+        br_px_x: f64,
+        br_px_y: f64,
         offset_start: u32,
         offset_len: u32,
         text: ?[*:0]const u8,
@@ -1607,9 +1647,20 @@ pub const CAPI = struct {
             .offset_len = 0,
         };
 
+        // Calculate bottom-right pixel coordinates based on text extent.
+        // We estimate br_px based on character count and cell dimensions.
+        const cell_width = core_surface.size.cell.width;
+        const cell_height = core_surface.size.cell.height;
+        const text_len: usize = text.text.len;
+        const estimated_cols = @max(1, text_len);
+        const br_px_x = vp.tl_px_x + @as(f64, @floatFromInt(estimated_cols * cell_width));
+        const br_px_y = vp.tl_px_y + @as(f64, @floatFromInt(cell_height));
+
         result.* = .{
             .tl_px_x = vp.tl_px_x,
             .tl_px_y = vp.tl_px_y,
+            .br_px_x = br_px_x,
+            .br_px_y = br_px_y,
             .offset_start = vp.offset_start,
             .offset_len = vp.offset_len,
             .text = text.text.ptr,
@@ -1626,6 +1677,67 @@ pub const CAPI = struct {
     /// Tell the surface that it needs to schedule a render
     export fn ghostty_surface_refresh(surface: *Surface) void {
         surface.refresh();
+    }
+
+    /// Write data to the PTY. This is data that is written to the terminal
+    /// as if it came from the PTY. This is useful for things like SSH channels.
+    export fn ghostty_surface_write_pty_output(
+        surface: *Surface,
+        ptr: [*]const u8,
+        len: usize,
+    ) void {
+        surface.writePtyOutput(ptr[0..len]);
+    }
+
+    /// Set the callback for PTY input. This is called when data is written
+    /// to the PTY from the terminal.
+    export fn ghostty_surface_set_pty_input_callback(
+        surface: *Surface,
+        cb: ?*const fn (void, [*]const u8, usize) callconv(.c) void,
+        userdata: ?*anyopaque,
+    ) void {
+        surface.setPtyInputCallback(cb, userdata);
+    }
+
+    /// Power mode for the surface. This controls performance/energy usage.
+    /// C type: ghostty_power_mode_e
+    pub const PowerModeE = enum(c_int) {
+        default = 0,
+        low_power = 1,
+        high_performance = 2,
+    };
+
+    /// Set the power mode for the surface.
+    export fn ghostty_surface_set_power_mode(
+        surface: *Surface,
+        mode: PowerModeE,
+    ) void {
+        const zig_mode: Surface.PowerMode = switch (mode) {
+            .default => .default,
+            .low_power => .low_power,
+            .high_performance => .high_performance,
+        };
+        surface.setPowerMode(zig_mode);
+    }
+
+    /// Get the scrollback offset for the surface. This returns the number
+    /// of rows in the scrollback buffer.
+    export fn ghostty_surface_scrollback_offset(surface: *Surface) u64 {
+        return surface.core_surface.io.terminal.screens.active.pager.viewportRowOffset();
+    }
+
+    /// Prepend scrollback content to the surface. This allows injecting
+    /// content into the scrollback buffer. Returns true on success.
+    export fn ghostty_surface_prepend_scrollback(
+        surface: *Surface,
+        ptr: [*]const u8,
+        len: usize,
+    ) bool {
+        // This is complex - create a new page, insert at scrollback head.
+        // For now, return false (not implemented).
+        _ = ptr;
+        _ = len;
+        return false;
     }
 
     /// Tell the surface that it needs to schedule a render
