@@ -366,6 +366,8 @@ typedef struct {
 typedef struct {
   double tl_px_x;
   double tl_px_y;
+  double br_px_x;
+  double br_px_y;
   uint32_t offset_start;
   uint32_t offset_len;
   const char* text;
@@ -1116,6 +1118,25 @@ void ghostty_inspector_metal_render(ghostty_inspector_t, void*, void*);
 bool ghostty_inspector_metal_shutdown(ghostty_inspector_t);
 #endif
 
+// PTY output - for SSH data
+void ghostty_surface_write_pty_output(ghostty_surface_t, const char*, size_t);
+
+// PTY input callback
+typedef void (*ghostty_pty_input_cb)(void*, const char*, size_t);
+void ghostty_surface_set_pty_input_callback(ghostty_surface_t, ghostty_pty_input_cb, void*);
+
+// Power mode
+typedef enum {
+    GHOSTTY_POWER_MODE_DEFAULT,
+    GHOSTTY_POWER_MODE_LOW_POWER,
+    GHOSTTY_POWER_MODE_HIGH_PERFORMANCE,
+} ghostty_power_mode_e;
+void ghostty_surface_set_power_mode(ghostty_surface_t, ghostty_power_mode_e);
+
+// Scrollback
+uint64_t ghostty_surface_scrollback_offset(ghostty_surface_t);
+bool ghostty_surface_prepend_scrollback(ghostty_surface_t, const char*, size_t);
+
 // APIs I'd like to get rid of eventually but are still needed for now.
 // Don't use these unless you know what you're doing.
 void ghostty_set_window_background_blur(ghostty_app_t, void*);
@@ -1128,3 +1149,4 @@ bool ghostty_benchmark_cli(const char*, const char*);
 #endif
 
 #endif /* GHOSTTY_H */
+
