@@ -422,15 +422,15 @@ pub const Surface = struct {
     pty_input_callback: ?*const fn (void, [*]const u8, usize) callconv(.c) void,
     pty_input_userdata: ?*anyopaque,
 
-    /// Power mode for the surface.
-    power_mode: PowerMode,
-
     /// Power mode enum for controlling performance/energy usage.
     const PowerMode = enum {
         default,
         low_power,
         high_performance,
     };
+
+    /// Power mode for the surface.
+    power_mode: PowerMode,
 
     /// Surface initialization options.
     pub const Options = extern struct {
