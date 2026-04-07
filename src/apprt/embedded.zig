@@ -404,6 +404,13 @@ pub const EnvVar = extern struct {
     value: [*:0]const u8,
 };
 
+/// Power mode enum for controlling performance/energy usage.
+pub const PowerMode = enum {
+    default,
+    low_power,
+    high_performance,
+};
+
 pub const Surface = struct {
     app: *App,
     platform: Platform,
@@ -421,13 +428,6 @@ pub const Surface = struct {
     /// Callback for PTY input. This is called when data is written to the PTY.
     pty_input_callback: ?*const fn (void, [*]const u8, usize) callconv(.c) void,
     pty_input_userdata: ?*anyopaque,
-
-    /// Power mode enum for controlling performance/energy usage.
-    const PowerMode = enum {
-        default,
-        low_power,
-        high_performance,
-    };
 
     /// Power mode for the surface.
     power_mode: PowerMode,
@@ -1712,7 +1712,7 @@ pub const CAPI = struct {
         surface: *Surface,
         mode: PowerModeE,
     ) void {
-        const zig_mode: Surface.PowerMode = switch (mode) {
+        const zig_mode: PowerMode = switch (mode) {
             .default => .default,
             .low_power => .low_power,
             .high_performance => .high_performance,
