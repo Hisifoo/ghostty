@@ -1723,7 +1723,7 @@ pub const CAPI = struct {
     /// Get the scrollback offset for the surface. This returns the number
     /// of rows in the scrollback buffer.
     export fn ghostty_surface_scrollback_offset(surface: *Surface) u64 {
-        return surface.core_surface.io.terminal.screens.active.viewportRowOffset();
+        return surface.core_surface.io.terminal.screens.active.pages.viewportRowOffset();
     }
 
     /// Prepend scrollback content to the surface. This allows injecting
