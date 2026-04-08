@@ -426,7 +426,7 @@ pub const Surface = struct {
     title: ?[:0]const u8 = null,
 
     /// Callback for PTY input. This is called when data is written to the PTY.
-    pty_input_callback: ?*const fn (void, [*]const u8, usize) callconv(.c) void,
+    pty_input_callback: ?*const fn (*anyopaque, [*]const u8, usize) callconv(.c) void,
     pty_input_userdata: ?*anyopaque,
 
     /// Power mode for the surface.
@@ -964,7 +964,7 @@ pub const Surface = struct {
     /// Set the PTY input callback. This is called when data is written to the PTY.
     pub fn setPtyInputCallback(
         self: *Surface,
-        cb: ?*const fn (void, [*]const u8, usize) callconv(.c) void,
+        cb: ?*const fn (*anyopaque, [*]const u8, usize) callconv(.c) void,
         userdata: ?*anyopaque,
     ) void {
         self.pty_input_callback = cb;
@@ -1693,7 +1693,7 @@ pub const CAPI = struct {
     /// to the PTY from the terminal.
     export fn ghostty_surface_set_pty_input_callback(
         surface: *Surface,
-        cb: ?*const fn (void, [*]const u8, usize) callconv(.c) void,
+        cb: ?*const fn (*anyopaque, [*]const u8, usize) callconv(.c) void,
         userdata: ?*anyopaque,
     ) void {
         surface.setPtyInputCallback(cb, userdata);
