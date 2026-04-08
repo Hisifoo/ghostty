@@ -52,7 +52,7 @@ pub const PixelFormat = enum(c_int) {
     /// 30 bit RGB, 10-bit big-endian samples, 2 unused padding bits (at least significant end).
     @"30RGB" = c.kCVPixelFormatType_30RGB,
     /// 30 bit RGB, 10-bit big-endian samples, 2 unused padding bits (at most significant end), video-range (64-940).
-    @"30RGB_r210" = c.kCVPixelFormatType_30RGB_r210,
+    // @"30RGB_r210" = c.kCVPixelFormatType_30RGB_r210, // Removed: not available in Xcode 15.4 SDK
     /// Component Y'CbCr 8-bit 4:2:2, ordered Cb Y'0 Cr Y'1
     @"422YpCbCr8" = c.kCVPixelFormatType_422YpCbCr8,
     /// Component Y'CbCrA 8-bit 4:4:4:4, ordered Cb Y' Cr A
