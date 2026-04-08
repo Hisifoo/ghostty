@@ -1724,6 +1724,7 @@ pub const CAPI = struct {
     /// of rows in the scrollback buffer.
     export fn ghostty_surface_scrollback_offset(surface: *Surface) u64 {
         // TODO: viewportRowOffset is not pub, return 0 for now
+        _ = surface;
         return 0;
     }
 
